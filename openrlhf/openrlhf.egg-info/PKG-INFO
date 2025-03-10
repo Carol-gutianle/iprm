@@ -1,0 +1,58 @@
+Metadata-Version: 2.2
+Name: openrlhf
+Version: 0.6.1.post1
+Summary: A Ray-based High-performance RLHF framework.
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Environment :: GPU :: NVIDIA CUDA
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: System :: Distributed Computing
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: accelerate
+Requires-Dist: bitsandbytes
+Requires-Dist: datasets
+Requires-Dist: deepspeed==0.16.4
+Requires-Dist: einops
+Requires-Dist: flash-attn==2.7.0.post2
+Requires-Dist: isort
+Requires-Dist: jsonlines
+Requires-Dist: loralib
+Requires-Dist: optimum
+Requires-Dist: packaging
+Requires-Dist: peft
+Requires-Dist: pynvml>=12.0.0
+Requires-Dist: ray[default]==2.42.0
+Requires-Dist: tensorboard
+Requires-Dist: torch
+Requires-Dist: torchmetrics
+Requires-Dist: tqdm
+Requires-Dist: transformers==4.48.3
+Requires-Dist: transformers_stream_generator
+Requires-Dist: wandb
+Requires-Dist: wheel
+Provides-Extra: vllm
+Requires-Dist: vllm==0.4.2; extra == "vllm"
+Provides-Extra: vllm-latest
+Requires-Dist: vllm>0.4.2; extra == "vllm-latest"
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+## Running Commands
+
+### ImplicitPRM
+To train Implicit PRM, you can run following commands
+```
+cd ./tasks
+bash run_ce.sh
+bash run_dpo.sh
+```
+The above scripts will automatically download the dataset  `Windy0822/ultrainteract_math_rollout` from huggingface and transform it to the format of OpenRLHF pipeline, which will be saved at the path indicated by the `--dataset` argument.
+
+Other argument settings are similar to the OpenRLHF package. 
+
