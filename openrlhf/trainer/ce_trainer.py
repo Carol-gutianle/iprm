@@ -143,7 +143,7 @@ class CETrainer(ABC):
             # train
             for data in self.train_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, labels, prompt_id_lens = data
+                    chosen_ids, c_mask, labels, prompt_id_lens = data['input_ids'], data['attention_mask'], data['labels'], data['extra']
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
                     labels = labels.to(torch.cuda.current_device())

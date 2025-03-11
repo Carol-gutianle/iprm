@@ -1,17 +1,19 @@
 import argparse
 import math
 import os
+import json
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 
 from transformers.trainer import get_scheduler
 
-from openrlhf.datasets import CEDataset
+from openrlhf.datasets import CEMLLMDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import CETrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
 from datasets import load_dataset
+from transformers import AutoProcessor
 import jsonlines
 from tqdm import tqdm
 import random
@@ -24,12 +26,25 @@ def load_dataset_from_json(data_path):
 def formalize_multimodal_data(save_path):
     data = load_dataset_from_json(save_path)
     writer = jsonlines.Writer(open(os.path.join('/fs-computility/ai-shen/shared/VauAI/gutianle/prime/data','train.jsonl'), 'w'))
+    output_list = []
     for index, sample in tqdm(enumerate(data),desc='Process multimodal data to OpenRLHF data:'):
         qid = index
         prompt_turn = {
             'role': 'user',
-            'content': sample['message']
+            'content': sample['messages'][1]['content']
         }
+        resp_turn = {
+            'role': 'assistant',
+            'content': sample['messages'][2]['content']
+        }
+        output_list.append({
+            'response': [prompt_turn, resp_turn],
+            'id': f'{qid}',
+            'image': sample['images']
+        })
+        random.shuffle(output_list)
+    for d in output_list:
+        writer.write(d)
         
 
 def formalize_ce_data(save_path):
@@ -106,6 +121,8 @@ def train(args):
     # configure tokenizer
     tokenizer = get_tokenizer(args.pretrain, model.model, "right", strategy, use_fast=not args.disable_fast_tokenizer)
     strategy.print(model)
+    # configure processor
+    processor = AutoProcessor.from_pretrained(args.pretrain)
 
     # load weights for ref model
     ref_model = Actor(
@@ -130,9 +147,10 @@ def train(args):
     optim = strategy.create_optimizer(model, lr=args.learning_rate, betas=args.adam_betas, weight_decay=args.l2)
 
     # prepare for data and dataset
-    formalize_ce_data(args.dataset)
+    # TODO: distinguish between before and after transferred data
+    formalize_multimodal_data(args.dataset)
     train_data, eval_data = blending_datasets(
-        'json@' + args.dataset,
+        os.path.join('/fs-computility/ai-shen/shared/VauAI/gutianle/prime/data','train.jsonl'),
         args.dataset_probs,
         strategy,
         args.seed,
@@ -152,20 +170,22 @@ def train(args):
     # train_data = train_data.map(shift_data)
     # eval_data = eval_data.map(shift_data)
 
-    train_dataset = CEDataset(
+    train_dataset = CEMLLMDataset(
         train_data,
         tokenizer,
         args.max_len,
         strategy,
+        processor,
         input_template=args.input_template,
         is_dpo=True,
         multiple_of=args.ring_attn_size,
     )
-    eval_dataset = CEDataset(
+    eval_dataset = CEMLLMDataset(
         eval_data,
         tokenizer,
         args.max_len,
         strategy,
+        processor,
         input_template=args.input_template,
         is_dpo=True,
         multiple_of=args.ring_attn_size,

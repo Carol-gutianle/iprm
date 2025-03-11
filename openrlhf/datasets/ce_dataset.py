@@ -4,9 +4,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from PIL import Image
 
 from .utils import exist_and_not_none, zero_pad_sequences
-
 
 def preprocess_data(
     data,
@@ -38,6 +38,24 @@ def preprocess_data(
     label = data["label"]
 
     return prompt, chosen, label
+
+def preprocess_mllm_data(
+    data,
+    input_template=None,
+    prompt_key=None,
+    chosen_key="response",
+    apply_chat_template=None,
+    is_dpo=False
+) -> str:
+    prompt = data["response"][0]['content']
+    chosen = data["response"][1]['content']
+    image = data["image"]
+    if chosen == 'good':
+        label = True
+    else:
+        label = False
+    return prompt, chosen, label, image
+    
 
 
 class CEDataset(Dataset):
@@ -175,8 +193,140 @@ class CEDataset(Dataset):
         chosen_masks = zero_pad_sequences(chosen_masks, side=padding_side)
         labels = torch.tensor(labels)
         return chosen_ids, chosen_masks, labels, extras
+    
+class CEMLLMDataset(Dataset):
+    '''
+    Multimodal Dataset for reward model, compatible with Qwen-VL
+    Args:
+        dataset: dataset for reward model
+        tokenizer: self.tokenizer for reward model
+        max_length: max length of input
+        image_processor: image processor for reward model
+    '''
+    def __init__(
+        self,
+        dataset,
+        tokenizer,
+        max_length: int,
+        strategy,
+        image_processor=None,
+        input_template=None,
+        is_dpo=False,
+        num_processors=20,
+        multiple_of=1
+    ) -> None:
+        super().__init__()
+        self.is_dpo = is_dpo
+        self.tokenizer = tokenizer
+        self.strategy = strategy
+        self.max_length = max_length
+        self.multiple_of = multiple_of
+        # add: image_processor
+        self.image_processor = image_processor
 
+        # chat_template
+        self.input_template = input_template
+        self.prompt_key = getattr(self.strategy.args, "prompt_key", None)
+        self.chosen_key = getattr(self.strategy.args, "chosen_key", None)
+        self.apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
+        
+        # keys in dataset are (response, id, image)
+        if self.apply_chat_template:
+            self.apply_chat_template = self.image_processor.apply_chat_template
+        # add: image processor
+        self.image_processor = image_processor
+        #  parallel loading datasets
+        # tips: do not encode image in this step! or the process will be very slow
+        processed_dataset = dataset.map(
+            self.process_data,
+            remove_columns = dataset.column_names,
+            num_proc = num_processors,
+            drop_last_batch = True
+        )
+        processed_dataset = processed_dataset.filter(lambda x: x["prompt"] is not None)
+        # store the processed data in class attributes
+        self.prompts = processed_dataset["prompt"]
+        self.resps = processed_dataset["resp"]
+        self.labels = processed_dataset["label"]
+        self.images = processed_dataset["image"]
+        self.extra = processed_dataset['extra']
+        
+    def process_data(self, data):
+        prompt, resp, label, image = preprocess_mllm_data(
+            data,
+            self.input_template,
+            self.prompt_key,
+            self.chosen_key,
+            self.apply_chat_template,
+            self.is_dpo,
+        )
+        
+        if self.is_dpo:
+            prompt_token = self.image_processor(
+                text = [prompt],
+                images = [Image.open(image[0]).convert("RGB")],
+                padding = True,
+                truncation = True,
+                add_special_tokens = False,
+                return_tensors = 'pt',
+                max_length = self.max_length
+            )
+            prompt_ids_len = prompt_token["attention_mask"].int().sum().item()
+            if prompt_ids_len >= self.max_length - 2:
+                prompt = None
 
+        return {
+            "prompt": prompt,
+            "resp": resp,
+            "label": label,
+            "image": image,
+            "extra": prompt_ids_len
+        }
+        
+    def __len__(self):
+        return len(self.resps)
+
+    def __getitem__(self, idx):
+        prompt, chosen, label, image, extra = self.prompts[idx], self.resps[idx], self.labels[idx], self.images[idx], self.extra[idx]
+        # encode
+        inputs = self.image_processor(
+            text = [prompt + chosen],
+            images = [Image.open(image[0]).convert("RGB")],
+            padding = True,
+            return_tensors = 'pt',
+        )
+        inputs['label'] = label
+        inputs['extra'] = extra
+        return inputs
+
+    def collate_fn(self, item_list):
+        # item_list中每个item是存在的key dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_grid_thw', 'label', 'extra'])
+        batch_input_ids = [item['input_ids'] for item in item_list]
+        batch_attention_mask = [item['attention_mask'] for item in item_list]
+        batch_pixel_values = [item['pixel_values'] for item in item_list]
+        batch_image_grid_thw = [item['image_grid_thw'] for item in item_list]
+        batch_labels = [item['label'] for item in item_list]
+        batch_extras = [item['extra'] for item in item_list]
+        # padding
+        if self.is_dpo:
+            padding_side = "right"
+        else:
+            padding_side = "left"
+        batch_input_ids = zero_pad_sequences(batch_input_ids, side=padding_side, value=self.tokenizer.pad_token_id)
+        batch_attention_mask = zero_pad_sequences(batch_attention_mask, side=padding_side)
+        batch_pixel_values = torch.stack(batch_pixel_values, dim=0)
+        batch_image_grid_thw = torch.stack(batch_image_grid_thw, dim=0)
+        batch_labels = torch.tensor(batch_labels)
+        batch_extras = torch.tensor(batch_extras)
+        return {
+            'input_ids': batch_input_ids,
+            'attention_mask': batch_attention_mask,
+            'pixel_values': batch_pixel_values,
+            'image_grid_thw': batch_image_grid_thw,
+            'labels': batch_labels,
+            'extra': batch_extras
+        }
+            
 
 class CEDataset_ICB(Dataset):
     """
